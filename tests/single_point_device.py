@@ -16,7 +16,7 @@ try:
     request('/api/schedule',{'enabled':False})
     if '--calibrate' in sys.argv:
         request('/api/protection/action',{'action':'calibrate'})
-        deadline=time.monotonic()+360
+        deadline=time.monotonic()+900
         while True:
             time.sleep(5)
             p=request('/api/state')['protection']

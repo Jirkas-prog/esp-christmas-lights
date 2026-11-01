@@ -33,9 +33,9 @@
 #endif
 
 #ifdef RELIABILITY_TEST
-constexpr char Version[] = "0.6.0-test";
+constexpr char Version[] = "0.6.1-test";
 #else
-constexpr char Version[] = "0.6.0";
+constexpr char Version[] = "0.6.1";
 #endif
 #if defined(ARDUINO_LILYGO_T_DISPLAY)
 constexpr char BoardId[] = "lilygo-t-display";
@@ -74,6 +74,7 @@ static protection::Limits protectionLimits;
 static protection::Timer faultTimer;
 static uint8_t faultCode = 0;
 static sensing::Calibration pwmCalibration;
+static uint8_t senseBank=0;
 static sensing::Model pwmModel;
 static sensing::Fit measurement;
 static sensing::Result measured;
@@ -186,7 +187,7 @@ static bool saveProtection(protection::Config &next) {
     protectionConfig = next; return true;
 }
 static uint32_t calibrationSignature(const protection::Config &c) {
-    uint32_t h=2166136261u ^ sensing::CalibrationMagic;
+    uint32_t h=2166136261u ^ sensing::CalibrationMagic ^ senseBank;
     for (uint16_t v : {c.referenceMv, c.reverseMv, c.zeroMv}) h=(h^v)*16777619u;
     for (auto &bank : c.profile) for (uint16_t v : bank) h=(h^v)*16777619u;
     return h;
@@ -201,6 +202,8 @@ static void acquire(sensing::Fit &fit, const sensing::Calibration &cal, lights::
     if (!pwm::same(frame.output,out) || !pwm::stable(frame) ||
         uint32_t(esp_timer_get_time()-frame.changedUs)<2000) return;
     const sensing::Basis basis(cal,out.a,out.b); // Keep divisions out of the ADC sample loop.
+    sensing::Batch batch;const bool transient=cal.tau>512;
+    double z=1;unsigned lastPhase=0;int64_t lastAt=0;
     const int64_t stop=esp_timer_get_time()+durationUs;
     while (esp_timer_get_time()<stop) {
         unsigned begin=LEDC.timer_group[0].timer[0].value.timer_cnt;
@@ -218,10 +221,20 @@ static void acquire(sensing::Fit &fit, const sensing::Calibration &cal, lights::
         const auto sample=calibratedRefs?basis.observe(pwmModel,t,mv):
             sensing::Sample{pwmModel.a[t]*1000,pwmModel.b[t]*1000,float(mv)-cal.zero};
         const bool clip=raw==4095 || mv>sensing::AdcMaxMv;
-        fit.add(sample.a,sample.b,sample.y,clip,phase);
-        if (repeat) repeat->add(sample.a,sample.b,sample.y,clip,phase);
+        if (transient) {
+            if (batch.data.count) {
+                if (at-lastAt>800) break; // An unobserved full PWM cycle has unknown timing.
+                z*=double(pwmModel.retention[t])/pwmModel.retention[lastPhase];
+                if (t<lastPhase) z*=pwmModel.retention[sensing::Period];
+            }
+            batch.add(sample.a,sample.b,sample.y,z,clip,phase);lastPhase=t;lastAt=at;
+        } else {
+            fit.add(sample.a,sample.b,sample.y,clip,phase);
+            if (repeat) repeat->add(sample.a,sample.b,sample.y,clip,phase);
+        }
         delayMicroseconds(esp_random()%13); // Avoid rational sample-clock aliasing.
     }
+    if (transient) {batch.merge(fit);if (repeat) batch.merge(*repeat);}
 }
 static void resetMeasurement() {
     measurement={}; measured={}; faultTimer.clear(); windowAt=millis();
@@ -232,7 +245,8 @@ static void cancelCalibration(const char *message) {
     light.on=false; pwm::stop(); saveLight(); resetMeasurement(); statePending=true;
 }
 static void prepareCalibrationPoint() {
-    calibration.nextAt=millis()+80; calibration.sampleAt=0;
+    unsigned settle=calibration.step<0?1000:std::max(80u,unsigned(ceilf(8*calibration.pwm.tau*calibration.pwm.ratio()/1024)));
+    calibration.nextAt=millis()+settle; calibration.sampleAt=0;
     calibration.fit={}; calibration.repeat={}; calibration.wave={};
 }
 static void calibrationTick(uint32_t now) {
@@ -244,7 +258,7 @@ static void calibrationTick(uint32_t now) {
     // Short batches keep HTTP/OTA and the independent watchdog responsive.
     unsigned duration=calibration.step==-2 ? 500 :
         (calibration.output.a+calibration.output.b<25 ? 1000 : 300);
-    acquire(calibration.fit,calibration.pwm,calibration.output,8000,false,
+    acquire(calibration.fit,calibration.pwm,calibration.output,3000,false,
             calibration.step<0 ? &calibration.wave : nullptr,
             uint32_t(now-calibration.sampleAt)>=duration/2 ? &calibration.repeat : nullptr);
     if (uint32_t(millis()-calibration.sampleAt)<duration) return;
@@ -257,13 +271,13 @@ static void calibrationTick(uint32_t now) {
             calibration.message="Snímací vstup nemá platnou klidovou úroveň. Ověř GPIO32 a GND.";
             trip(4); return;
         }
-        calibration.output={500,0}; calibration.step=-1; prepareCalibrationPoint();
-        calibration.message="Měřím odezvu kondenzátoru při běžném PWM první poloviny.";
+        calibration.output=calibration.pwm.positive(0)?lights::Output{500,0}:lights::Output{0,500}; calibration.step=-1; prepareCalibrationPoint();
+        calibration.message="Měřím odezvu kondenzátoru při běžném PWM kladného směru.";
         return;
     }
     if (calibration.step==-1) {
         if (!sensing::identify(calibration.wave,calibration.pwm,pwmModel)) {
-            calibration.message="Průběh PWM nelze spolehlivě změřit. Kalibrace se neuložila.";
+            calibration.message="Průběh PWM nelze spolehlivě změřit. Ověř volbu výstupu, bod A a kondenzátor snímače.";
             trip(4); return;
         }
         calibration.step=0; calibration.output={5,0}; prepareCalibrationPoint();
@@ -281,24 +295,26 @@ static void calibrationTick(uint32_t now) {
     // Judge precision at the runtime window size, not just the long calibration
     // average, and compare an independently timed half of the capture for drift.
     auto precision=sensing::precision(result,calibration.pwm,va,vb);
-    float runtimeScale=sqrtf(std::max(1.f,result.samples/1000.f));
+    float runtimeScale=sqrtf(std::max(1.f,result.samples/(calibration.pwm.tau>512?400.f:1000.f)));
     precision.errorA*=runtimeScale; precision.errorB*=runtimeScale;
     bool okay=sensing::reliable(precision,bank!=1,bank!=0,reserve);
-    if (bank!=1) okay=okay && va>=calibration.pwm.low()+100 && va<=sensing::AdcMaxMv &&
-        repeated.valid && fabsf(repeated.a-result.a)*1000<=(va-calibration.pwm.low())*reserve;
-    if (bank!=0) okay=okay && vb>=-50 && vb<=calibration.pwm.high()-100 &&
-        repeated.valid && fabsf(repeated.b-result.b)*1000<=(calibration.pwm.high()-vb)*reserve;
+    for (unsigned i=0;i<2;++i) if (bank==2 || bank==i) {
+        const float v=i?vb:va;
+        const float drift=fabsf(i?repeated.b-result.b:repeated.a-result.a)*1000;
+        okay=okay && v>=-50 && v<=sensing::AdcMaxMv && calibration.pwm.distance(i,v)>=100 &&
+            repeated.valid && drift<=calibration.pwm.distance(i,v)*reserve;
+    }
     if (bank<2) {
         // Low-SNR values are not trusted by protection below the resulting cutoff.
         float v=bank ? vb : va;
-        const float minimum=bank?0:calibration.pwm.low()+100;
-        const float maximum=bank?calibration.pwm.high()-100:sensing::AdcMaxMv;
+        const float minimum=calibration.pwm.positive(bank)?calibration.pwm.low()+100:0;
+        const float maximum=calibration.pwm.positive(bank)?sensing::AdcMaxMv:calibration.pwm.high()-100;
         calibration.pwm.references[bank][index]=lroundf(std::max(minimum,std::min(maximum,std::isfinite(v)?v:minimum)));
         if (index<100) calibration.result.profile[bank][index]=calibration.pwm.references[bank][index];
     } else {
         const float ra=calibration.pwm.references[0][index],rb=calibration.pwm.references[1][index];
-        okay=okay && fabsf(va-ra)<(ra-calibration.pwm.low())*reserve &&
-            fabsf(vb-rb)<(calibration.pwm.high()-rb)*reserve;
+        okay=okay && fabsf(va-ra)<calibration.pwm.distance(0,ra)*reserve &&
+            fabsf(vb-rb)<calibration.pwm.distance(1,rb)*reserve;
         calibration.result.profile[2][index]=lroundf(std::max(0.f,std::min(3000.f,(va+vb)/2)));
     }
     if (index<100) {
@@ -380,8 +396,8 @@ static void protectionTick(uint32_t now) {
     if (uint32_t(millis()-windowAt)<200) return;
     measured=measurement.result(); probeAt=millis();
     bool good=measurement.healthy(measured,protectionConfig.thresholdPercent);
-    probeMv=std::max(0L,std::min(4000L,lroundf(pwmCalibration.low()+measured.a*pwmCalibration.contrast(0,previousOutput.a))));
-    probeEarlyMv=std::max(0L,std::min(4000L,lroundf(pwmCalibration.high()-measured.b*pwmCalibration.contrast(1,previousOutput.b))));
+    probeMv=std::max(0L,std::min(4000L,lroundf(pwmCalibration.shortLevel(0)+measured.a*pwmCalibration.signedContrast(0,previousOutput.a))));
+    probeEarlyMv=std::max(0L,std::min(4000L,lroundf(pwmCalibration.shortLevel(1)+measured.b*pwmCalibration.signedContrast(1,previousOutput.b))));
     if (faultTimer.observe(good,probeAt,protectionConfig.delayMs)) trip(measured.valid ? 1 : 2);
     measurement={}; windowAt=millis();
 }
@@ -395,6 +411,9 @@ static void protectionJson(JsonObject obj) {
     obj["delay_ms"] = protectionConfig.delayMs; obj["threshold_percent"] = protectionConfig.thresholdPercent;
     obj["threshold_mv"] = protectionConfig.calibrated ? pwmCalibration.threshold(0,500,protectionConfig.thresholdPercent) : 0;
     obj["reverse_threshold_mv"] = protectionConfig.calibrated ? pwmCalibration.threshold(1,500,protectionConfig.thresholdPercent) : 0;
+    obj["sense_output"]=senseBank?"AOUT2":"AOUT1";obj["positive_bank"]=senseBank;
+    obj["first_threshold_direction"]=pwmCalibration.positive(0)?"below":"above";
+    obj["second_threshold_direction"]=pwmCalibration.positive(1)?"below":"above";
     obj["sense_topology"]="single_point_a";obj["nominal_supply_mv"]=sensing::SupplyMv;
     obj["sense_low_mv"]=pwmCalibration.low();obj["sense_high_mv"]=pwmCalibration.high();
     obj["reference_mv"] = protectionConfig.referenceMv; obj["zero_mv"] = protectionConfig.zeroMv;
@@ -578,7 +597,7 @@ static void fillConfig(JsonDocument &doc) {
     lights::json(doc.createNestedObject("night_gap"),nightPreset);
     lights::json(doc.createNestedObject("window_presets"),windowPresets);
     auto p=doc.createNestedObject("protection");
-    p["enabled"]=protectionConfig.enabled;p["latch_fault"]=bool(protectionConfig.latchFault);
+    p["sense_output"]=senseBank?"AOUT2":"AOUT1";p["enabled"]=protectionConfig.enabled;p["latch_fault"]=bool(protectionConfig.latchFault);
     p["delay_ms"]=protectionConfig.delayMs;p["threshold_percent"]=protectionConfig.thresholdPercent;
     auto limits=p.createNestedObject("limits");const char *names[]={"first","second","all"};
     for (unsigned i=0;i<3;++i) limits[names[i]]=protectionLimits.ignored[i];
@@ -590,7 +609,7 @@ static void fillCalibration(JsonDocument &doc) {
     doc["zero_mv"]=protectionConfig.zeroMv;
     auto profiles=doc.createNestedArray("profiles_mv");
     for (auto &bank:protectionConfig.profile) {auto a=profiles.createNestedArray();for (auto mv:bank) a.add(mv);}
-    auto pwm=doc.createNestedObject("pwm");pwm["zero_mv"]=pwmCalibration.zero;
+    auto pwm=doc.createNestedObject("pwm");pwm["zero_mv"]=pwmCalibration.zero;pwm["positive_bank"]=pwmCalibration.positiveBank;
     pwm["tau_ticks"]=pwmCalibration.tau;pwm["phase_shift_ticks"]=pwmCalibration.shift;
     auto refs=pwm.createNestedArray("references_mv");
     for (auto &bank:pwmCalibration.references) {auto a=refs.createNestedArray();for (auto mv:bank) a.add(mv);}
@@ -847,6 +866,20 @@ static CommandResult applyCommand(const String &path,const JsonDocument &doc) {
         }
         scheduleTick(true);statePending=true;configPending=true;return {};
     }
+    if (path == "/api/protection/polarity") {
+        if (calibration.active) return {"Probíhá kalibrace.","409 Conflict"};
+        uint8_t next=senseBank;const char *error=protection::parsePolarity(doc.as<JsonObjectConst>(),next);
+        if (error) return {error};
+        if (next==senseBank) return {};
+        light.on=false;pwm::stop();
+        auto config=protectionConfig;config.calibrated=false;
+        if (!saveLight() || !saveProtection(config) || prefs.putUChar("sensebank",next)!=1) {
+            trip(5);return {"Zapojení se nepodařilo uložit.","500 Internal Server Error"};
+        }
+        senseBank=next;pwmCalibration={};pwmCalibration.positiveBank=senseBank;protectionLimits={};
+        calibration.message="Zapojení snímače změněno. Spusť novou kalibraci.";
+        resetMeasurement();statePending=true;configPending=true;calibrationPending=true;return {};
+    }
     if (path == "/api/protection/limits") {
         if (calibration.active) return {"Probíhá kalibrace.","409 Conflict"};
         auto next=protectionLimits;
@@ -889,7 +922,7 @@ static CommandResult applyCommand(const String &path,const JsonDocument &doc) {
         calibration.restore = light;
         light.on = false; pwm::stop();
         if (!saveLight()) return { "Stav se nepodařilo uložit.", "500 Internal Server Error"};
-        calibration.result = protectionConfig; calibration.pwm = sensing::Calibration{}; calibration.limits={};
+        calibration.result = protectionConfig; calibration.pwm = sensing::Calibration{}; calibration.pwm.positiveBank=senseBank; calibration.limits={};
         calibration.active = true; calibration.step = -2; prepareCalibrationPoint();
         calibration.output = {0, 0}; calibration.message = "Kontroluji klidovou úroveň snímače.";
         faultTimer.clear(); statePending = true; return {};
@@ -959,7 +992,7 @@ static void initWeb() {
         httpd_uri_t uri{}; uri.uri = path; uri.method = HTTP_GET; uri.handler = get;
         ESP_ERROR_CHECK(httpd_register_uri_handler(httpServer, &uri));
     }
-    for (const char *path : {"/api/light", "/api/settings", "/api/alias", "/api/update", "/api/restart", "/api/protection", "/api/protection/action", "/api/protection/limits", "/api/schedule", "/api/schedule/resume", "/api/schedule/window/0", "/api/schedule/window/1", "/api/preset", "/api/schedule/night", "/api/schedule/presets"}) {
+    for (const char *path : {"/api/light", "/api/settings", "/api/alias", "/api/update", "/api/restart", "/api/protection", "/api/protection/action", "/api/protection/limits", "/api/protection/polarity", "/api/schedule", "/api/schedule/resume", "/api/schedule/window/0", "/api/schedule/window/1", "/api/preset", "/api/schedule/night", "/api/schedule/presets"}) {
         httpd_uri_t uri{}; uri.uri = path; uri.method = HTTP_POST; uri.handler = post;
         ESP_ERROR_CHECK(httpd_register_uri_handler(httpServer, &uri));
     }
@@ -1019,6 +1052,7 @@ static void mqttMessage(char *topic, uint8_t *payload, unsigned length) {
     else if (suffix=="schedule/window/0/set") path="/api/schedule/window/0";
     else if (suffix=="schedule/window/1/set") path="/api/schedule/window/1";
     else if (suffix=="protection/set") path="/api/protection";
+    else if (suffix=="protection/polarity/set") path="/api/protection/polarity";
     else if (suffix=="protection/limits/set") path="/api/protection/limits";
     else if (suffix=="protection/action") path="/api/protection/action";
     else if (suffix=="network/set") path="/api/settings";
@@ -1072,7 +1106,7 @@ static void mqttTask(void *) {
                                      *settings.mqttUser ? settings.mqttPassword : nullptr,
                                      availability.c_str(), 1, true, "offline")) {
                         bool subscribed=mqtt.subscribe("homeassistant/status",1);
-                        for (const char *suffix:{"/set","/+/set","/+/action","/get","/protection/limits/set","/schedule/window/+/set","/schedule/night/set","/schedule/presets/set"})
+                        for (const char *suffix:{"/set","/+/set","/+/action","/get","/protection/limits/set","/protection/polarity/set","/schedule/window/+/set","/schedule/night/set","/schedule/presets/set"})
                             subscribed=mqtt.subscribe((baseTopic+suffix).c_str(),1) && subscribed;
                         if (subscribed && migrateMqttAlias(mqtt)) {
                             mqttOnline = true; discoverPending=true;statePending=true;configPending=true;calibrationPending=true;
@@ -1257,6 +1291,8 @@ void setup() {
     }
     setTimezone();
     if (scheduleConfig.enabled || !light.brightness || (scheduleConfig.onePercentOff && light.brightness==1)) light.on=false;
+    senseBank=prefs.getUChar("sensebank",0);
+    if (senseBank>1) {senseBank=0;faultCode=5;}
     protection::Config savedProtection;
     if (prefs.isKey("protection")) {
         if (prefs.getBytesLength("protection") == sizeof(savedProtection) &&
@@ -1269,7 +1305,7 @@ void setup() {
     if (protectionConfig.calibrated) {
         if (prefs.getBytesLength("pwmcal")!=sizeof(pwmCalibration) ||
             prefs.getBytes("pwmcal",&pwmCalibration,sizeof(pwmCalibration))!=sizeof(pwmCalibration) ||
-            !sensing::valid(pwmCalibration) || pwmCalibration.signature!=calibrationSignature(protectionConfig)) {
+            !sensing::valid(pwmCalibration) || pwmCalibration.positiveBank!=senseBank || pwmCalibration.signature!=calibrationSignature(protectionConfig)) {
             protectionConfig.calibrated=false;
         } else calibration.message="Uložená kalibrace pasivního měření PWM načtena.";
     }
@@ -1278,7 +1314,7 @@ void setup() {
         !protection::valid(protectionLimits) || protectionLimits.signature!=pwmCalibration.signature) {
         protectionLimits={}; protectionConfig.calibrated=false;
     }
-    if (!protectionConfig.calibrated) { light.on=false; calibration.message="Nové měření PWM vyžaduje automatickou kalibraci."; }
+    if (!protectionConfig.calibrated) { pwmCalibration.positiveBank=senseBank;light.on=false; calibration.message="Nové měření PWM vyžaduje automatickou kalibraci."; }
     const auto resume=warm?reliability::latest(resumeSlots):nullptr;
     if (resume) resumeSequence=resume->sequence;
     if (resume && !protectionBlocks()) {

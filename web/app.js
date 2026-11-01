@@ -80,12 +80,14 @@ function renderProtection(p) {
     protectionLabels();
   }
   $('#protection-voltage').textContent = p.calibrating ? 'Měření kalibrace · šum '+Math.round(p.adc_noise_mv || 0)+' mV' : p.samples ? '1. polarita: '+Math.round(p.gain_a*100)+' % · 2. polarita: '+Math.round(p.gain_b*100)+' % napětí LED' : state.output_active && p.monitoring_required === false ? 'Pod nastavenou hranicí' : 'Čekám na svícení';
-  $('#protection-limit').textContent = p.calibrated ? '1. polarita pod '+Math.round(p.threshold_mv)+' mV · 2. polarita nad '+Math.round(p.reverse_threshold_mv)+' mV (100 % jasu)' : 'Po kalibraci';
+  $('#protection-limit').textContent = p.calibrated ? '1. polarita '+(p.first_threshold_direction==='below'?'pod ':'nad ')+Math.round(p.threshold_mv)+' mV · 2. polarita '+(p.second_threshold_direction==='below'?'pod ':'nad ')+Math.round(p.reverse_threshold_mv)+' mV (100 % jasu)' : 'Po kalibraci';
   $('#protection-calibrated').textContent = p.calibrated ? 'Uložená v zařízení' : 'Dosud neprovedená';
   $('#calibration-message').textContent = p.message;
+  $('#sense-output').value=p.sense_output || 'AOUT1';
   $('#calibration-progress').hidden = !p.calibrating; $('#calibration-progress').value = p.progress;
   $('#cancel-calibration').hidden = !p.calibrating;
   const locked = busy || uploading || pendingRestart || state.updating;
+  $('#sense-output').disabled=locked || p.calibrating;
   $('#calibrate').disabled = locked || p.calibrating;
   $('#cancel-calibration').disabled = locked;
   $('#clear-fault').disabled = locked || p.calibrating || !p.fault;
@@ -129,6 +131,12 @@ async function saveLimits(automatic) {
 }
 $('#limits-form').onsubmit=event=>{event.preventDefault();saveLimits(false);};
 $('#limits-auto').onclick=()=>saveLimits(true);
+$('#sense-output').onchange=async () => {
+  if (busy) return;busy=true;
+  try {await api('/api/protection/polarity',{output:$('#sense-output').value});notice('Zapojení uloženo. Spusť novou kalibraci.');}
+  catch (error) {notice(error.message,true);}
+  finally {busy=false;await poll();}
+};
 $('#protection-form').oninput = () => { editingProtection = true; protectionLabels(); };
 $('#protection-form').onsubmit = async event => {
   event.preventDefault();

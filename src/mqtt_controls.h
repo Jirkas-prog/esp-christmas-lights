@@ -32,6 +32,9 @@ static bool discoverControls(PubSubClient &mqtt) {
     toggle("one_percent_off","Při 1 % vypnout","schedule/set","schedule.one_percent_off","one_percent_off");
     toggle("protection_enabled","Ochrana proti zkratu","protection/set","protection.enabled","enabled");
     toggle("latch_fault","Po poruše trvale blokovat","protection/set","protection.latch_fault","latch_fault");
+    begin("sense_output","Sensor output (Snímací výstup)","protection/polarity/set","protection.sense_output");
+    auto outputs=d.createNestedArray("options");outputs.add("AOUT1");outputs.add("AOUT2");
+    d["command_template"]="{\"output\":\"{{ value }}\"}";send("select","sense_output");
     struct Number {const char *id,*name,*topic,*field,*key,*unit;float min,max,step;};
     for (auto &n: {
         Number{"preset_brightness","Jas při zapnutí","preset/set","on_preset.brightness","brightness","%",2,100,1},

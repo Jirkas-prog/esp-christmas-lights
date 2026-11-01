@@ -54,6 +54,13 @@ inline const char *parseLimits(JsonObjectConst doc, Limits &c) {
     }
     next.checksum=checksum(next); c=next; return nullptr;
 }
+inline const char *parsePolarity(JsonObjectConst doc,uint8_t &bank) {
+    if (doc.size()!=1 || !doc["output"].is<const char *>()) return "Vyber AOUT1 nebo AOUT2.";
+    const JsonString text=doc["output"].as<JsonString>();
+    if (text.size()!=5 || (strcmp(text.c_str(),"AOUT1") && strcmp(text.c_str(),"AOUT2")))
+        return "Vyber AOUT1 nebo AOUT2.";
+    bank=text.c_str()[4]=='2';return nullptr;
+}
 struct Config {
     uint32_t magic = Magic;
     uint16_t delayMs = 500;
@@ -77,8 +84,8 @@ inline uint32_t checksum(const Config &c) {
 inline bool valid(const Config &c) {
     return c.magic == Magic && c.latchFault <= 1 && c.delayMs >= 100 && c.delayMs <= 10000 &&
         c.thresholdPercent >= 30 && c.thresholdPercent <= 95 && c.settleUs == 2000 &&
-        (!c.calibrated || (c.referenceMv <= 3100 &&
-                          c.zeroMv <= 600 && c.referenceMv >= c.zeroMv + 100)) &&
+        (!c.calibrated || (c.referenceMv <= 3100 && c.reverseMv <= 3100 &&
+                          c.zeroMv <= 600 && std::max(c.referenceMv,c.reverseMv) >= c.zeroMv + 100)) &&
         c.checksum == checksum(c);
 }
 inline bool load(Config &c) {

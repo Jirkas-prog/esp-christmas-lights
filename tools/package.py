@@ -51,6 +51,7 @@ manifest['files']['factory.bin'] = dict(offset='0x0',bytes=len(merged),sha256=ha
 (out/'CTI-ME.txt').write_text(f'{label}, {flash_size} flash; DRV8833. Firmware {version}.\n'
     'GPIO25 = AIN1, GPIO26 = AIN2, GPIO27 = nSLEEP, společná zem GND.\n'
     'GPIO32 = bod A za 5,6 ohmu přes 3k/3k dělič a kondenzátor na GND. GPIO37 se neřídí, může být fyzicky spojen s GND.\n'
+    'Ve webu vyber AOUT1 nebo AOUT2 podle výstupu, ze kterého vede rezistor. Změna vyžaduje novou kalibraci.\n'
     'Ochranu nastav ve webu Světlo > Ochrana proti zkratu. První start čeká na kalibraci.\n'
     'Výchozí reakce na závadu: jen vypnout. Volitelné trvalé blokování se nastavuje na webu.\n'
     'První USB instalace: factory.bin od adresy 0x0, pouze na určenou novou desku.\n'
