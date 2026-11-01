@@ -2,7 +2,7 @@
 #include <ArduinoJson.h>
 #include <string.h>
 
-constexpr char DefaultAlias[] = "ledpasek01";
+constexpr char DefaultAlias[] = "ledpasek02";
 inline bool validAlias(const char *s) {
     const size_t n = strlen(s);
     if (!n || n > 32 || s[0] == '-' || s[n - 1] == '-') return false;

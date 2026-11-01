@@ -1,13 +1,21 @@
 """Local ESP32 HTTP helper. Never reads flash or creates a board backup."""
 import json
+import os
 import time
 import urllib.error
 import urllib.request
 
 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-host = 'http://192.0.2.48'
+host = os.environ.get('LIGHT_HOST', 'http://ledpasek02.local').rstrip('/')
+expected_id = os.environ.get('LIGHT_DEVICE_ID', '')
 
 def request(path, body=None, expected=200):
+    if body is not None:
+        if not expected_id:
+            raise RuntimeError('Set LIGHT_DEVICE_ID to the verified target ID before writing.')
+        actual=request('/api/state')['id']
+        if actual!=expected_id:
+            raise RuntimeError('Device identity mismatch; refusing write.')
     headers = {'X-Requested-With': 'Svetylka'}
     if isinstance(body, dict):
         body = json.dumps(body).encode()
@@ -25,9 +33,11 @@ def request(path, body=None, expected=200):
 
 def upload(path, version):
     before = request('/api/state')
-    assert before['id'] == 'svetylka-20489c6cdda0' and before['board'] == 'lilygo-t-display'
+    if not expected_id or before['id']!=expected_id:
+        raise RuntimeError('Verify LIGHT_DEVICE_ID before OTA.')
+    flash_code={'lilygo-t-display':4,'esp32-wroom-32':2}[before['board']]
     blob = path.read_bytes()
-    assert blob[0] == 0xe9 and blob[3] >> 4 == 4 and version.encode()+b'\0' in blob
+    assert blob[0] == 0xe9 and blob[3] >> 4 == flash_code and version.encode()+b'\0' in blob
     print('Uploading', version, len(blob), flush=True)
     try:
         request('/api/update', blob)
@@ -38,7 +48,7 @@ def upload(path, version):
         time.sleep(1)
         try:
             state = request('/api/state')
-            if state['version'] == version and state['ota_slot'] != before['ota_slot'] and state['wifi'] and state['mqtt']:
+            if state['id'] == expected_id and state['version'] == version and state['ota_slot'] != before['ota_slot'] and state['wifi'] and state['mqtt']:
                 print('OTA verified:', version, state['ota_slot'], flush=True)
                 return state
         except OSError:

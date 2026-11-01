@@ -7,40 +7,26 @@ import json
 from pathlib import Path
 import re
 import time
-import urllib.error
-import urllib.request
+import sys
 
 parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument('--host', default='http://192.0.2.48')
+parser.add_argument('--host', default='http://ledpasek02.local')
 parser.add_argument('--ota', type=Path)
+parser.add_argument('--device-id', required=True)
 args = parser.parse_args()
 root = Path(__file__).resolve().parents[1]
 version = re.search(r'Version\[\] = "([0-9.]+)"', (root/'src/main.cpp').read_text(encoding='utf-8')).group(1)
-opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+sys.path.insert(0,str(root/'tools'))
+import device_api
+device_api.host=args.host
+device_api.expected_id=args.device_id
+request=device_api.request
 records = []
 
 
 def record(message, data=None):
     print(message, json.dumps(data, ensure_ascii=False) if data is not None else '', flush=True)
     records.append(dict(message=message, data=data))
-
-
-def request(path, body=None, expected=200):
-    headers = {'X-Requested-With': 'Svetylka'}
-    if isinstance(body, dict):
-        body = json.dumps(body).encode()
-        headers['Content-Type'] = 'application/json'
-    elif body is not None:
-        headers['Content-Type'] = 'application/octet-stream'
-    req = urllib.request.Request(args.host + path, body, headers)
-    try:
-        response = opener.open(req, timeout=90 if path == '/api/update' else 8)
-    except urllib.error.HTTPError as error:
-        response = error
-    with response:
-        value = response.read()
-        assert response.status == expected, (path, response.status, value[:300])
-        return json.loads(value) if 'json' in response.headers.get('Content-Type', '') else value
 
 
 def wait_online(previous_slot=None):
@@ -59,7 +45,7 @@ def wait_online(previous_slot=None):
 
 try:
     before = wait_online()
-    assert before['id'] == 'svetylka-20489c6cdda0' and before['board'] == 'lilygo-t-display'
+    assert before['id'] == args.device_id and before['board'] == 'lilygo-t-display'
     original_light = {key: before[key] for key in ('state', 'brightness', 'effect', 'interval_ms')}
     old_calibration = request('/api/protection')
     if args.ota:

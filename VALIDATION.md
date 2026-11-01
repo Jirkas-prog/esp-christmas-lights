@@ -1,11 +1,12 @@
-# Ověření zdrojového snímku
+# Ověření 0.6.0
 
 Datum: 1. 11. 2026.
 
-- tools/test.ps1: hostitelské testy plánů, řízení LED, ADC, ochrany a sítí prošly.
-- Gitleaks 8.30.1: kontrola exportovaných zdrojů prošla. Příklady obsahují pouze zástupné hodnoty.
-- Testy běžely na Windows / MSVC 2022; potřebné knihovny byly dostupné místně.
+- MSVC / `tools/test.ps1`: nativní testy prošly. Nezávislá simulace integruje proudy dvou rezistorů do kondenzátoru, včetně spodního omezení ADC. Ověřuje bod A, obě polarity, nesymetrické napětí LED, otevřený výstup, nízké střídy, jednotlivé i společné zkraty a nulovou změnu signálu opačné polarity proti OFF.
+- Ověřeny jsou také RC identifikace, saturace a výpadky měření, limity kvality signálu, časování poruchy, tepelný výpočet, 8181 kombinací PWM, efekty, síťová obnova a časový plán.
+- `node --check web/app.js`: prošlo jako součást `tools/test.ps1`.
+- `tests/device_api_guard.py`: 4 testy prošly. Bez cílového ID nebo při jeho neshodě se neodesílá žádný zápis.
+- PlatformIO: úplné sestavení `tdisplay` (16 MB) i `esp32wroom32` (4 MB) prošlo, včetně čistého veřejného sestavení bez místních přístupů. Obrazy se vejdou do obou OTA partition.
+- Veřejné výchozí souřadnice zůstávají 0,0; časové testy používají Greenwich.
 
-Úplné sestavení firmwaru, instalace na desku a testy připojené k reálnému zařízení nebyly při tomto importu provedeny. Tento snímek není nové binární vydání.
-
-Před veřejným vydáním byla odstraněna výchozí poloha instalace. Hostitelské testy znovu ověřují neutrální výchozí hodnoty a výpočty vůči veřejnému referenčnímu bodu Greenwich.
+Instalace této verze, kalibrace a živé testy na konkrétní desce zatím nejsou ověřené. Skript `tests/single_point_device.py` je připraven pro výslovně vybraný cíl; není součástí automatických offline testů. Fyzický zkrat ani tepelná zkouška zalitého rezistoru nebyly provedeny. Numerické testy tyto zkoušky nenahrazují.

@@ -11,12 +11,13 @@ import time
 
 root=Path(__file__).resolve().parents[1]
 sys.path[:0]=[str(root/'tools'),str(root/'.local/test-deps')]
-from device_api import request as http
+from device_api import request as http, expected_id
 import paho.mqtt.client as mqtt
 from jinja2 import Environment,StrictUndefined
 
-base='wifi2mqtt/ledpasek01'
-identity='svetylka-20489c6cdda0'
+target=http('/api/state')
+if not expected_id or target['id']!=expected_id:raise RuntimeError('Verify LIGHT_DEVICE_ID first.')
+base=target['topic'];identity=target['id']
 secrets={k:json.loads(v) for k,v in re.findall(r'^#define (BOOTSTRAP_\w+) (.+)$',(root/'.local/bootstrap.h').read_text(),re.M)}
 messages=queue.Queue();latest={};retained=set();entities={};rows=[]
 client=mqtt.Client(mqtt.CallbackAPIVersion.VERSION2,client_id='ledpasek01-settings-test')

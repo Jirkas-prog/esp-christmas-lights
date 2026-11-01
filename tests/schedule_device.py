@@ -106,10 +106,10 @@ try:
     client.username_pw_set(secrets['BOOTSTRAP_MQTT_USER'],secrets['BOOTSTRAP_MQTT_PASSWORD'])
     client.on_message=lambda c,u,m:messages.put(json.loads(m.payload))
     client.connect(secrets['BOOTSTRAP_MQTT_HOST'],secrets['BOOTSTRAP_MQTT_PORT'],30)
-    client.subscribe('wifi2mqtt/ledpasek01/state');client.loop_start()
+    base=request('/api/state')['topic'];client.subscribe(base+'/state');client.loop_start()
     assert messages.get(timeout=15)['version']=='0.4.0'
     while not messages.empty():messages.get_nowait()
-    client.publish('wifi2mqtt/ledpasek01/set',json.dumps(dict(state='ON',brightness=1)),retain=False).wait_for_publish()
+    client.publish(base+'/set',json.dumps(dict(state='ON',brightness=1)),retain=False).wait_for_publish()
     deadline=time.monotonic()+10
     while time.monotonic()<deadline:
         ack=messages.get(timeout=10)

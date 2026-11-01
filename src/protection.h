@@ -77,7 +77,7 @@ inline uint32_t checksum(const Config &c) {
 inline bool valid(const Config &c) {
     return c.magic == Magic && c.latchFault <= 1 && c.delayMs >= 100 && c.delayMs <= 10000 &&
         c.thresholdPercent >= 30 && c.thresholdPercent <= 95 && c.settleUs == 2000 &&
-        (!c.calibrated || (c.referenceMv <= 2450 &&
+        (!c.calibrated || (c.referenceMv <= 3100 &&
                           c.zeroMv <= 600 && c.referenceMv >= c.zeroMv + 100)) &&
         c.checksum == checksum(c);
 }
@@ -91,12 +91,6 @@ inline bool load(Config &c) {
     return valid(c);
 }
 inline bool restartBlocked(const Config &c, uint8_t fault) { return fault && c.latchFault; }
-inline uint16_t threshold(const Config &c) {
-    return c.zeroMv + (c.referenceMv - c.zeroMv) * c.thresholdPercent / 100u;
-}
-inline bool healthy(const Config &c, unsigned mv) {
-    return mv >= threshold(c) && mv <= 2450;
-}
 // Consecutive bad probes, unsigned clock arithmetic, no accumulation across OFF
 // or healthy readings. Gaps are a separate monitor fault, not a healthy sample.
 struct Timer {

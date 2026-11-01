@@ -79,8 +79,8 @@ function renderProtection(p) {
     $('#protection-threshold').value = p.threshold_percent;
     protectionLabels();
   }
-  $('#protection-voltage').textContent = p.calibrating ? 'Měření kalibrace · šum '+Math.round(p.adc_noise_mv || 0)+' mV' : p.samples ? 'A: '+Math.round(p.gain_a*100)+' % · B: '+Math.round(p.gain_b*100)+' % kalibrace' : state.output_active && p.monitoring_required === false ? 'Pod nastavenou hranicí' : 'Čekám na svícení';
-  $('#protection-limit').textContent = p.calibrated ? p.threshold_percent+'–'+(200-p.threshold_percent)+' % kalibrovaného signálu' : 'Po kalibraci';
+  $('#protection-voltage').textContent = p.calibrating ? 'Měření kalibrace · šum '+Math.round(p.adc_noise_mv || 0)+' mV' : p.samples ? '1. polarita: '+Math.round(p.gain_a*100)+' % · 2. polarita: '+Math.round(p.gain_b*100)+' % napětí LED' : state.output_active && p.monitoring_required === false ? 'Pod nastavenou hranicí' : 'Čekám na svícení';
+  $('#protection-limit').textContent = p.calibrated ? '1. polarita pod '+Math.round(p.threshold_mv)+' mV · 2. polarita nad '+Math.round(p.reverse_threshold_mv)+' mV (100 % jasu)' : 'Po kalibraci';
   $('#protection-calibrated').textContent = p.calibrated ? 'Uložená v zařízení' : 'Dosud neprovedená';
   $('#calibration-message').textContent = p.message;
   $('#calibration-progress').hidden = !p.calibrating; $('#calibration-progress').value = p.progress;

@@ -33,9 +33,9 @@
 #endif
 
 #ifdef RELIABILITY_TEST
-constexpr char Version[] = "0.5.2-test";
+constexpr char Version[] = "0.6.0-test";
 #else
-constexpr char Version[] = "0.5.2";
+constexpr char Version[] = "0.6.0";
 #endif
 #if defined(ARDUINO_LILYGO_T_DISPLAY)
 constexpr char BoardId[] = "lilygo-t-display";
@@ -144,7 +144,7 @@ static struct {
 } calibration;
 static const char *faultName() {
     switch (faultCode) {
-        case 1: return "Pokles napětí / podezření na zkrat";
+        case 1: return "Napětí mimo mez pro danou polaritu / podezření na zkrat";
         case 2: return "Neplatný nebo nestabilní signál snímače";
         case 3: return "Výpadek měřicí úlohy";
         case 4: return "Kalibrace selhala";
@@ -186,7 +186,7 @@ static bool saveProtection(protection::Config &next) {
     protectionConfig = next; return true;
 }
 static uint32_t calibrationSignature(const protection::Config &c) {
-    uint32_t h=2166136261u;
+    uint32_t h=2166136261u ^ sensing::CalibrationMagic;
     for (uint16_t v : {c.referenceMv, c.reverseMv, c.zeroMv}) h=(h^v)*16777619u;
     for (auto &bank : c.profile) for (uint16_t v : bank) h=(h^v)*16777619u;
     return h;
@@ -200,8 +200,7 @@ static void acquire(sensing::Fit &fit, const sensing::Calibration &cal, lights::
     const auto frame=pwm::read();
     if (!pwm::same(frame.output,out) || !pwm::stable(frame) ||
         uint32_t(esp_timer_get_time()-frame.changedUs)<2000) return;
-    const float scaleA=calibratedRefs ? cal.reference(0,out.a)-cal.zero : 1000;
-    const float scaleB=calibratedRefs ? cal.reference(1,out.b)-cal.zero : 1000;
+    const sensing::Basis basis(cal,out.a,out.b); // Keep divisions out of the ADC sample loop.
     const int64_t stop=esp_timer_get_time()+durationUs;
     while (esp_timer_get_time()<stop) {
         unsigned begin=LEDC.timer_group[0].timer[0].value.timer_cnt;
@@ -216,10 +215,11 @@ static void acquire(sensing::Fit &fit, const sensing::Calibration &cal, lights::
         unsigned mv=esp_adc_cal_raw_to_voltage(raw,&adcCalibration);
         if (wave) wave->add(phase,mv);
         unsigned t=(phase+cal.shift)&1023;
-        const float a=pwmModel.a[t]*scaleA, b=pwmModel.b[t]*scaleB, y=int(mv)-cal.zero;
-        const bool clip=raw==4095 || mv>2450;
-        fit.add(a,b,y,clip,phase);
-        if (repeat) repeat->add(a,b,y,clip,phase);
+        const auto sample=calibratedRefs?basis.observe(pwmModel,t,mv):
+            sensing::Sample{pwmModel.a[t]*1000,pwmModel.b[t]*1000,float(mv)-cal.zero};
+        const bool clip=raw==4095 || mv>sensing::AdcMaxMv;
+        fit.add(sample.a,sample.b,sample.y,clip,phase);
+        if (repeat) repeat->add(sample.a,sample.b,sample.y,clip,phase);
         delayMicroseconds(esp_random()%13); // Avoid rational sample-clock aliasing.
     }
 }
@@ -280,24 +280,25 @@ static void calibrationTick(uint32_t now) {
     const float reserve=(100-calibration.result.thresholdPercent)/200.f;
     // Judge precision at the runtime window size, not just the long calibration
     // average, and compare an independently timed half of the capture for drift.
-    auto precision=result;
+    auto precision=sensing::precision(result,calibration.pwm,va,vb);
     float runtimeScale=sqrtf(std::max(1.f,result.samples/1000.f));
     precision.errorA*=runtimeScale; precision.errorB*=runtimeScale;
     bool okay=sensing::reliable(precision,bank!=1,bank!=0,reserve);
-    if (bank!=1) okay=okay && va>=calibration.pwm.zero+100 && va<=2450 &&
-        repeated.valid && fabsf(repeated.a-result.a)<=fabsf(result.a)*reserve;
-    if (bank!=0) okay=okay && vb>=calibration.pwm.zero+100 && vb<=3000 &&
-        repeated.valid && fabsf(repeated.b-result.b)<=fabsf(result.b)*reserve;
+    if (bank!=1) okay=okay && va>=calibration.pwm.low()+100 && va<=sensing::AdcMaxMv &&
+        repeated.valid && fabsf(repeated.a-result.a)*1000<=(va-calibration.pwm.low())*reserve;
+    if (bank!=0) okay=okay && vb>=-50 && vb<=calibration.pwm.high()-100 &&
+        repeated.valid && fabsf(repeated.b-result.b)*1000<=(calibration.pwm.high()-vb)*reserve;
     if (bank<2) {
         // Low-SNR values are not trusted by protection below the resulting cutoff.
         float v=bank ? vb : va;
-        calibration.pwm.references[bank][index]=std::isfinite(v) ?
-            lroundf(std::max(float(calibration.pwm.zero+100),std::min(2450.f,v))) : calibration.pwm.zero+100;
+        const float minimum=bank?0:calibration.pwm.low()+100;
+        const float maximum=bank?calibration.pwm.high()-100:sensing::AdcMaxMv;
+        calibration.pwm.references[bank][index]=lroundf(std::max(minimum,std::min(maximum,std::isfinite(v)?v:minimum)));
         if (index<100) calibration.result.profile[bank][index]=calibration.pwm.references[bank][index];
     } else {
-        float ra=calibration.pwm.references[0][index]-calibration.pwm.zero;
-        float rb=calibration.pwm.references[1][index]-calibration.pwm.zero;
-        okay=okay && fabsf(result.a*1000/ra-1)<reserve && fabsf(result.b*1000/rb-1)<reserve;
+        const float ra=calibration.pwm.references[0][index],rb=calibration.pwm.references[1][index];
+        okay=okay && fabsf(va-ra)<(ra-calibration.pwm.low())*reserve &&
+            fabsf(vb-rb)<(calibration.pwm.high()-rb)*reserve;
         calibration.result.profile[2][index]=lroundf(std::max(0.f,std::min(3000.f,(va+vb)/2)));
     }
     if (index<100) {
@@ -379,8 +380,8 @@ static void protectionTick(uint32_t now) {
     if (uint32_t(millis()-windowAt)<200) return;
     measured=measurement.result(); probeAt=millis();
     bool good=measurement.healthy(measured,protectionConfig.thresholdPercent);
-    probeMv=std::max(0L,std::min(4000L,lroundf(pwmCalibration.zero+measured.a*(pwmCalibration.reference(0,previousOutput.a)-pwmCalibration.zero))));
-    probeEarlyMv=std::max(0L,std::min(4000L,lroundf(pwmCalibration.zero+measured.b*(pwmCalibration.reference(1,previousOutput.b)-pwmCalibration.zero))));
+    probeMv=std::max(0L,std::min(4000L,lroundf(pwmCalibration.low()+measured.a*pwmCalibration.contrast(0,previousOutput.a))));
+    probeEarlyMv=std::max(0L,std::min(4000L,lroundf(pwmCalibration.high()-measured.b*pwmCalibration.contrast(1,previousOutput.b))));
     if (faultTimer.observe(good,probeAt,protectionConfig.delayMs)) trip(measured.valid ? 1 : 2);
     measurement={}; windowAt=millis();
 }
@@ -392,7 +393,10 @@ static void protectionJson(JsonObject obj) {
     obj["blocked"] = protection::restartBlocked(protectionConfig, faultCode) || monitorFailed || (protectionConfig.enabled &&
         !protectionConfig.calibrated);
     obj["delay_ms"] = protectionConfig.delayMs; obj["threshold_percent"] = protectionConfig.thresholdPercent;
-    obj["threshold_mv"] = protectionConfig.calibrated ? protection::threshold(protectionConfig) : 0;
+    obj["threshold_mv"] = protectionConfig.calibrated ? pwmCalibration.threshold(0,500,protectionConfig.thresholdPercent) : 0;
+    obj["reverse_threshold_mv"] = protectionConfig.calibrated ? pwmCalibration.threshold(1,500,protectionConfig.thresholdPercent) : 0;
+    obj["sense_topology"]="single_point_a";obj["nominal_supply_mv"]=sensing::SupplyMv;
+    obj["sense_low_mv"]=pwmCalibration.low();obj["sense_high_mv"]=pwmCalibration.high();
     obj["reference_mv"] = protectionConfig.referenceMv; obj["zero_mv"] = protectionConfig.zeroMv;
     obj["reverse_mv"] = protectionConfig.reverseMv;
     obj["calibration_forward_mv"] = calibration.result.referenceMv;
@@ -521,7 +525,7 @@ static void scheduleStatus(JsonObject o) {
 }
 static void fillState(JsonDocument &doc) {
     Guard guard; lights::json(doc, light);
-    doc["version"] = Version; doc["id"] = deviceId;
+    doc["version"] = Version; doc["id"] = deviceId;doc["sense_topology"]="single_point_a";
     doc["alias"] = hostname; doc["ap_ssid"] = apName;
     doc["board"] = BoardId; doc["flash_bytes"] = ESP.getFlashChipSize();
     doc["uptime_ms"] = millis(); doc["ota_slot"] = esp_ota_get_running_partition()->label;
@@ -581,7 +585,7 @@ static void fillConfig(JsonDocument &doc) {
 }
 static void fillCalibration(JsonDocument &doc) {
     Guard guard;
-    doc["calibrated"]=protectionConfig.calibrated;doc["signature"]=pwmCalibration.signature;
+    doc["sense_topology"]="single_point_a";doc["calibrated"]=protectionConfig.calibrated;doc["signature"]=pwmCalibration.signature;
     doc["reference_mv"]=protectionConfig.referenceMv;doc["reverse_mv"]=protectionConfig.reverseMv;
     doc["zero_mv"]=protectionConfig.zeroMv;
     auto profiles=doc.createNestedArray("profiles_mv");

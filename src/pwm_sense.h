@@ -7,6 +7,8 @@
 // Passive observer only. No GPIO, timer or LEDC writes belong in this file.
 namespace sensing {
 constexpr unsigned Period = 1024, Bins = 64;
+constexpr uint32_t CalibrationMagic=0x50574d32;
+constexpr float SupplyMv=5000, AdcMaxMv=3100;
 struct Model {
     float a[Period], b[Period];
     void configure(unsigned dutyA, unsigned dutyB, float tau, float ratio) {
@@ -76,12 +78,21 @@ inline bool reliable(const Result &r, bool a, bool b, float relativeMargin) {
         (!b || (r.b>0 && r.errorB<=r.b*relativeMargin));
 }
 struct Calibration {
-    uint32_t magic = 0x50574d31;
+    uint32_t magic = CalibrationMagic;
     uint16_t tau = 120, zero = 0;
     int16_t shift = 16;
     uint16_t references[2][104] = {}; // 1..100 %, followed by duties 1..4.
     uint32_t signature = 0, checksum = 0;
-    float ratio() const { return 3 - 2 * zero / 3300.f; }
+    // One 3k input resistor and one 3k shunt, including the internal pull-up.
+    float ratio() const { return 2 - zero / 3300.f; }
+    float low() const { return zero/ratio(); }
+    float high() const { return low()+SupplyMv*(1-1/ratio()); }
+    float contrast(unsigned bank,unsigned duty) const {
+        return bank ? high()-reference(1,duty) : reference(0,duty)-low();
+    }
+    float threshold(unsigned bank,unsigned duty,unsigned percent) const {
+        return bank ? high()-contrast(bank,duty)*percent/100.f : low()+contrast(bank,duty)*percent/100.f;
+    }
     float reference(unsigned bank, unsigned duty) const {
         if (!duty) return zero;
         if (duty < 5) return references[bank][99 + duty];
@@ -96,11 +107,31 @@ inline uint32_t checksum(const Calibration &c) {
     return hash;
 }
 inline bool valid(const Calibration &c) {
-    if (c.magic != 0x50574d31 || c.tau < 16 || c.tau > 512 || abs(c.shift) > 64 ||
+    if (c.magic != CalibrationMagic || c.tau < 16 || c.tau > 512 || abs(c.shift) > 64 ||
         c.zero < 160 || c.zero > 600 || c.checksum != checksum(c)) return false;
-    for (auto &bank : c.references) for (unsigned ref : bank)
-        if (ref < c.zero + 100 || ref > 3000) return false;
+    for (unsigned bank=0;bank<2;++bank) for (unsigned ref:c.references[bank])
+        if (ref>AdcMaxMv || (bank ? c.high()-ref : ref-c.low())<99) return false;
     return true;
+}
+// Subtract the phase-dependent SHORT waveform, then fit the remaining LED
+// voltage. Both gains are 1 when healthy and approach 0 on a short, although
+// GPIO32 falls in the forward phase and rises in the reverse phase.
+struct Sample { float a,b,y; };
+struct Basis {
+    float zero,shortA,shortB,voltageA,voltageB;
+    Basis(const Calibration &cal,unsigned dutyA,unsigned dutyB):zero(cal.zero),
+        shortA(cal.low()-cal.zero),shortB(cal.high()-cal.zero),
+        voltageA(cal.contrast(0,dutyA)),voltageB(-cal.contrast(1,dutyB)) {}
+    Sample observe(const Model &model,unsigned phase,float mv) const {
+        const float wa=model.a[phase],wb=model.b[phase];
+        return {wa*voltageA,wb*voltageB,mv-zero-wa*shortA-wb*shortB};
+    }
+};
+inline Result precision(const Result &raw,const Calibration &cal,float forward,float reverse) {
+    Result out=raw;const float a=(forward-cal.low())/1000.f,b=(cal.high()-reverse)/1000.f;
+    out.a=out.b=1;
+    out.errorA=a>0?raw.errorA/a:1e9f;out.errorB=b>0?raw.errorB/b:1e9f;
+    return out;
 }
 struct Wave {
     uint32_t sum[Bins] = {}, count[Bins] = {};
@@ -119,7 +150,7 @@ inline bool identify(const Wave &wave, Calibration &cal, Model &model) {
             }
             if (n < 60 || aa < .01) continue;
             float gain=ay/aa, error=std::max(0.f, (yy-ay*ay/aa)/n);
-            if (gain < 100 || gain+cal.zero > 2450) continue;
+            if (gain < 100 || gain+cal.zero > AdcMaxMv) continue;
             if (error < bestError) { bestError=error; bestTau=tau; bestShift=shift; }
         }
     }
