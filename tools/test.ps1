@@ -21,3 +21,5 @@ if errorlevel 1 exit /b 1
 if ($LASTEXITCODE -ne 0) { throw 'Core checks failed.' }
 & node --check (Join-Path $root 'web\app.js')
 if ($LASTEXITCODE -ne 0) { throw 'Web syntax check failed.' }
+& node --check (Join-Path $root 'web\i18n.js')
+if ($LASTEXITCODE -ne 0) { throw 'Language syntax check failed.' }

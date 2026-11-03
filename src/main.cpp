@@ -33,9 +33,9 @@
 #endif
 
 #ifdef RELIABILITY_TEST
-constexpr char Version[] = "0.6.1-test";
+constexpr char Version[] = "0.6.2-test";
 #else
-constexpr char Version[] = "0.6.1";
+constexpr char Version[] = "0.6.2";
 #endif
 #if defined(ARDUINO_LILYGO_T_DISPLAY)
 constexpr char BoardId[] = "lilygo-t-display";
@@ -661,6 +661,7 @@ static bool readJson(httpd_req_t *r, JsonDocument &doc) {
 extern const char htmlStart[] asm("_binary_web_index_html_start");
 extern const char cssStart[] asm("_binary_web_style_css_start");
 extern const char jsStart[] asm("_binary_web_app_js_start");
+extern const char languageStart[] asm("_binary_web_i18n_js_start");
 static esp_err_t get(httpd_req_t *r) {
     httpHeartbeat=millis();
     String path = r->uri;
@@ -762,8 +763,8 @@ static esp_err_t get(httpd_req_t *r) {
         networkJson(doc.as<JsonObject>());
         return jsonReply(r, doc);
     }
-    const char *body = path == "/style.css" ? cssStart : path == "/app.js" ? jsStart : htmlStart;
-    httpd_resp_set_type(r, path == "/style.css" ? "text/css" : path == "/app.js" ? "application/javascript" : "text/html; charset=utf-8");
+    const char *body = path == "/style.css" ? cssStart : path == "/app.js" ? jsStart : path == "/i18n.js" ? languageStart : htmlStart;
+    httpd_resp_set_type(r, path == "/style.css" ? "text/css" : (path == "/app.js" || path == "/i18n.js") ? "application/javascript" : "text/html; charset=utf-8");
     httpd_resp_set_hdr(r, "Cache-Control", "no-cache");
     httpd_resp_set_hdr(r, "X-Content-Type-Options", "nosniff");
     httpd_resp_set_hdr(r, "Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'; base-uri 'none'");
@@ -985,10 +986,10 @@ static void initWeb() {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     configASSERT(config.task_priority<pwm::TaskPriority);
     // Optimized POST frame uses ~6.7 KB, plus HTTP/JSON/OTA call stacks.
-    config.max_uri_handlers = 24; config.stack_size = 18432;
+    config.max_uri_handlers = 26; config.stack_size = 18432; // 25 routes plus the optional reliability-test route.
     config.recv_wait_timeout = 5;config.send_wait_timeout=3; config.lru_purge_enable = true;
     ESP_ERROR_CHECK(httpd_start(&httpServer, &config));
-    for (const char *path : {"/", "/style.css", "/app.js", "/api/state", "/api/settings", "/api/protection", "/api/scope", "/api/schedule"}) {
+    for (const char *path : {"/", "/style.css", "/app.js", "/i18n.js", "/api/state", "/api/settings", "/api/protection", "/api/scope", "/api/schedule"}) {
         httpd_uri_t uri{}; uri.uri = path; uri.method = HTTP_GET; uri.handler = get;
         ESP_ERROR_CHECK(httpd_register_uri_handler(httpServer, &uri));
     }

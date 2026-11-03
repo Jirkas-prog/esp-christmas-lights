@@ -21,3 +21,8 @@ aside{position:fixed;inset:0 auto 0 0;width:220px;background:#151b23;border-righ
 .string-preview.on.breathe i{animation-name:breathe}.string-preview.on.tide i{animation-name:tide}.string-preview.on.tide i:nth-child(even){animation-delay:calc(var(--blink) / -2)}
 .string-preview.on.candlelight i{animation-name:candlelight}.string-preview.on.candlelight i:nth-child(even){animation-delay:calc(var(--blink) / -3)}
 @keyframes breathe{0%,100%{opacity:1}50%{opacity:.2}}@keyframes tide{0%,100%{opacity:1}50%{opacity:.25}}@keyframes candlelight{0%,100%{opacity:.8}17%{opacity:.95}32%{opacity:.65}51%{opacity:.85}73%{opacity:.6}88%{opacity:.9}}
+
+/* The language control remains usable on narrow screens. */
+.workspace > header{flex-wrap:wrap;gap:.75rem}
+.language-control{display:flex;align-items:center;gap:.5rem;margin:0;font-size:.75rem}
+.language-control select{width:auto;min-width:4.5rem;margin:0;padding:.35rem .5rem}

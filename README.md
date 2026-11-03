@@ -1,21 +1,27 @@
 # ESP Christmas Lights · ledpasek02
 
-Firmware 0.6.1 pro ESP32, DRV8833 a dvouvodičový LED řetěz se dvěma opačnými polaritami. Český web, MQTT / Home Assistant, automatika podle slunce a pasivní ochrana proti zkratu. Výchozí alias je `ledpasek02`; mění se na webu a používá se také pro DHCP, mDNS, záložní AP a MQTT.
+Firmware 0.6.2 for an ESP32, a DRV8833 bridge and a two-wire LED string with opposite polarities. It provides an English/Czech web interface, MQTT / Home Assistant integration, solar scheduling and passive short-circuit detection. The default alias is `ledpasek02`; changing it also changes DHCP, mDNS, fallback Wi-Fi and MQTT naming.
 
-## Zapojení
+## English and Czech
 
-Napájení můstku **5 V**, společná skutečná zem ESP32 a DRV8833. Napájení řetězu neveďte přes 3,3V regulátor ESP32. GPIO37 je vstupní pin; firmware ho neřídí. Případný spoj na GND musí být fyzický.
+Choose **EN** or **CZ** in the header. The first visit follows the browser language (Czech for `cs`, otherwise English), and the choice is remembered in that browser. Switching preserves unsaved settings, selected files and open sections. It sends no command to the board. Device aliases, network names, MQTT topics, input values and raw JSON examples remain literal. Both languages cover protection, calibration, diagnostics, scheduling and update messages.
 
-| ESP32 | DRV8833 / připojení |
+The language preference belongs to the browser. Firmware settings, MQTT codes, Home Assistant discovery identities and stored calibration are unchanged. Home Assistant retains its existing bilingual effect names.
+
+## Wiring
+
+Supply the bridge with **5 V** and connect a real common ground between ESP32 and DRV8833. Do not power the string through the ESP32 3.3 V regulator. GPIO37 is input-only and is not driven by the firmware; any connection to GND must be physical.
+
+| ESP32 | DRV8833 / connection |
 |---|---|
 | GPIO25 | AIN1 |
 | GPIO26 | AIN2 |
 | GPIO27 | nSLEEP / SLEEP / EEP |
 | GND | GND |
-| GPIO32 / ADC1_CH4 | Střed snímacího děliče |
+| GPIO32 / ADC1_CH4 | Sense-divider midpoint |
 
 ```text
-DRV8833 AOUT1 ── 5,6 Ω / 5 W ── A ── LED řetěz ── AOUT2
+DRV8833 AOUT1 ── 5.6 Ω / 5 W ── A ── LED string ── AOUT2
                                 │
                                3 kΩ
                                 │
@@ -28,77 +34,83 @@ DRV8833 AOUT1 ── 5,6 Ω / 5 W ── A ── LED řetěz ── AOUT2
                                GND
 ```
 
-Schéma ukazuje rezistor na AOUT1. **Výstupy AOUT1 a AOUT2 lze prohodit.** Ve webu zvolte výstup můstku, ke kterému je připojen rezistor 5,6 Ω. Volba se ukládá a je dostupná i v MQTT / Home Assistant. Její změna vypne světlo a zneplatní kalibraci; poté spusťte novou. Kalibrace tuto volbu sama nepřepíná, protože obrácené zapojení a zkrat mohou mít podobný signál.
+The diagram places the resistor on AOUT1. **AOUT1 and AOUT2 may be swapped.** Select the bridge output connected to the 5.6 Ω resistor in the web interface. This choice is saved and is also available through MQTT / Home Assistant. Changing it turns off the light and invalidates calibration; run calibration again. Calibration does not change the selection automatically because reversed wiring and a short circuit can produce similar signals.
 
-Doporučený keramický kondenzátor C je 100 nF. Kalibrace změří časovou konstantu skutečného RC obvodu a ověří kvalitu signálu; libovolná kapacita nemusí dát měřitelný průběh. Hodnoty obou odporů 3 kΩ a napájení 5 V jsou součástí měřicího modelu. Snímání je připojené **za výkonovým rezistorem**. Firmware používá slabý interní pull-up ADC a zahrnuje jeho vliv do výpočtu.
+The recommended ceramic capacitor C is 100 nF. Calibration measures the actual RC time constant and checks signal quality; an arbitrary capacitance may not produce a measurable waveform. Both 3 kΩ resistors and the 5 V supply are part of the model. Sensing connects **after the power resistor**. Firmware enables the weak internal ADC pull-up and includes its effect in the calculation.
 
-GPIO32 patří do ADC1, takže může měřit i při aktivní Wi-Fi. [Espressif ADC](https://docs.espressif.com/projects/esp-idf/en/v4.4.7/esp32/api-reference/peripherals/adc.html). Pinout a vstupní tabulka můstku: [TI DRV8833](https://www.ti.com/lit/ds/symlink/drv8833.pdf).
+GPIO32 belongs to ADC1, so it can measure while Wi-Fi is active. References: [Espressif ADC](https://docs.espressif.com/projects/esp-idf/en/v4.4.7/esp32/api-reference/peripherals/adc.html) and [TI DRV8833 pinout and input table](https://www.ti.com/lit/ds/symlink/drv8833.pdf).
 
-## Ochrana a kalibrace
+## Protection and calibration
 
-Na webu **Světlo → Ochrana proti zkratu → Automatická kalibrace**. Kalibrace změří OFF, odezvu RC obvodu a rozsah 1–100 % pro první polovinu, druhou polovinu i celý řetěz. Měří i nejkratší pulzy používané při prolínání. Trvá několik minut; slabé signály se měří déle. Při neúspěchu zůstane předchozí platná kalibrace zachovaná.
+Open **Light → Short-circuit protection → Start automatic calibration**. Calibration measures OFF, RC response and 1–100% brightness for the first half, second half and full string, including the shortest crossfade pulses. It takes several minutes; weaker signals are sampled longer. If it fails, the previous valid calibration remains saved.
 
-- Při kladném napájení přes rezistor napětí bodu A při zkratu klesá k zemi.
-- Při opačné polaritě napětí bodu A při zkratu stoupá k napájení. Nastavení AOUT1/AOUT2 určuje, které polovině odpovídá každý směr.
-- Měření čte fázi skutečného PWM a porovnává obě části průběhu s jejich kalibrací. Pouhý průměr obou polarit zkrat spolehlivě nerozliší.
-- U pomalejšího RC obvodu se z každého krátkého měření oddělí doznívání předchozího napětí kondenzátoru. Prolínání tak nemusí čekat na ustálení. Kalibrace čekání a posouzení přesnosti přizpůsobí změřené časové konstantě; příliš slabý signál stále odmítne.
-- Hodnota 80 % znamená spodní mez 80 % kalibrovaného napětí na LED. Pro opačnou polaritu se používá rozdíl vůči napájení; mez ADC je tedy horní. Hlídá se i odchylka opačným směrem a neplatné měření.
-- Kalibrace dovoluje téměř nulový odběr i otevřený výstup. Po změně řetězu proveďte novou kalibraci pro jeho skutečnou napěťovou charakteristiku.
-- Ochrana nevkládá testovací pulzy a nerozsvěcí vypnutou polovinu. Před první platnou kalibrací je výstup při zapnuté ochraně blokovaný.
-- Doba potvrzení poruchy je nastavitelná 0,1–10 s. Výchozí reakce pouze vypne světlo; nové ruční ON dovolí další pokus. Trvalé blokování je volitelné.
-- Kalibrace z kvality signálu určí hranice ignorovaných nízkých jasů pro jednotlivé poloviny a celý řetěz. Ruční úprava i návrat k automatice jsou dostupné ve webu a MQTT.
+- With positive supply through the resistor, a short circuit pulls point A toward ground.
+- With opposite polarity, a short circuit pulls point A toward the supply. The AOUT1/AOUT2 setting determines which half corresponds to each direction.
+- Measurement reads the phase of actual PWM and compares both parts of the waveform with calibration. Averaging both polarities alone cannot reliably distinguish a short circuit.
+- For slower RC circuits, each short measurement separates the remaining capacitor response from the previous voltage. Crossfades need not wait for settling. Calibration adapts its settling time and accuracy assessment to the measured time constant; signals that remain too weak are rejected.
+- An 80% setting means a lower limit of 80% of calibrated LED voltage. Opposite polarity uses the difference from supply voltage, so its ADC threshold is an upper limit. Excessive deviation in the opposite direction and invalid measurements are also monitored.
+- Calibration permits near-zero current and an open output. Recalibrate after replacing the string to capture its actual voltage characteristics.
+- Protection injects no test pulses and does not light an inactive half. With protection enabled, output is blocked until the first valid calibration.
+- Fault confirmation time is adjustable from 0.1–10 s. The default response turns the light off; a new manual ON permits another attempt. Persistent latching is optional.
+- Signal quality determines the ignored low-brightness limits for each half and the full string. Manual overrides and restoration of automatic limits are available through the web interface and MQTT.
 
-**Tepelný předpoklad: 2 W v rezistoru.** Při zkratu se počítá `P = U²/R × (dutyA+dutyB)/1024`. Pro konzervativní 5,25 V a 5,32 Ω vychází nejvýše 39 % pro celý řetěz nebo 79 % pro jedinou polovinu. Nejde o automatické vypnutí ochrany pod těmito jasy: skutečnou mez určuje kvalita měření. Nastavení nad tímto tepelným předpokladem je povolené, ale web i MQTT hlásí výrazné varování. Skutečná teplota zalitého rezistoru se neměří; software nenahrazuje tepelnou pojistku.
+**Thermal assumption: 2 W in the resistor.** During a short circuit, `P = U²/R × (dutyA+dutyB)/1024`. With conservative values of 5.25 V and 5.32 Ω, the maximum is 39% for the full string or 79% for one half. Protection is not automatically disabled below these brightness values: the actual limit depends on measurement quality. Settings above this thermal assumption are permitted, but the web interface and MQTT show a prominent warning. The actual temperature of the encapsulated resistor is not measured; software does not replace a thermal fuse.
 
-ADC má omezenou přesnost u horního konce rozsahu. Kalibrace kontroluje saturaci, opakovatelnost a rozlišení zdravého signálu od zkratu. Výsledek numerického testu není měřením teploty ani potvrzením chování konkrétní desky.
+ADC accuracy is limited near the upper end of its range. Calibration checks saturation, repeatability and whether a healthy signal can be distinguished from a short circuit. A numerical test is neither a temperature measurement nor confirmation of a particular board's behaviour.
 
-## Ovládání a síť
+## Control and networking
 
-Web: `http://ledpasek02.local/`, případně IP přidělená routerem. Web a OTA nemají heslo. Záložní otevřené AP se zapne po výpadku hlavní Wi-Fi a po obnovení připojení se vypne; adresa AP je `http://192.168.4.1/`. Používejte důvěryhodnou lokální síť.
+Open `http://ledpasek02.local/` or the IP address assigned by the router. The web interface and OTA have no password. An open fallback AP starts after loss of the main Wi-Fi network and stops when the connection recovers; its address is `http://192.168.4.1/`. Use a trusted local network.
 
-Režimy mají anglický i český název: celý řetěz, jednotlivé poloviny, střídání, prolínání, měkké prolínání, dýchání, příliv a světlo svíčky. Jas a délka cyklu jsou nastavitelné. Samostatná předvolba určuje jas a režim obyčejného ON. Volba **1 % = OFF** skutečně vypne stav i výstup; zvýšení jasu znovu zapne a ON obnoví předvolbu.
+Effects include the full string, either half, alternating, linear crossfade, soft crossfade, breathing, tide and candlelight. Brightness and cycle duration are adjustable. A separate preset determines brightness and effect for an ordinary ON command. **1% = OFF** switches off both the reported state and output; increasing brightness turns the light back on, and ON restores the preset.
 
-Deska získává čas přes internet, počítá východ/západ z časového pásma a zeměpisných souřadnic a podporuje časové posuny. Veřejné výchozí souřadnice jsou 0,0: nastavte vlastní místo. Večerní, noční i ranní interval mají samostatný jas a režim. Automatiku lze vypnout nezávisle na ručním ovládání; ruční změna má přednost do další hranice plánu.
+The board obtains time from the internet and calculates sunrise/sunset from a time zone and coordinates, with configurable offsets. Public default coordinates are 0,0: configure your own location. Evening, night and morning windows have separate brightness and effects. Automation can be disabled independently of manual control; a manual change takes priority until the next schedule boundary.
 
-MQTT základ: `wifi2mqtt/ledpasek02`. Home Assistant discovery vytvoří světlo a nastavení. Konfigurace je v retained `/config`, stav v `/state`, kalibrace v `/calibration`, stav světla v `/light/state` a dostupnost v `/availability`.
+MQTT base: `wifi2mqtt/ledpasek02`. Home Assistant discovery creates the light and settings. Retained configuration is in `/config`, state in `/state`, calibration in `/calibration`, light state in `/light/state` and availability in `/availability`.
 
-| Příkazové téma pod základem | Účel / příklad |
+| Command topic under the base | Purpose / example |
 |---|---|
 | `/set` | `{"state":"ON","brightness":35,"effect":"all"}` |
-| `/preset/set` | Výchozí jas a režim ON |
-| `/schedule/set` | Automatika, poloha, pásmo, časy a posuny |
-| `/schedule/window/0/set`, `/schedule/window/1/set` | Časová okna |
-| `/schedule/presets/set` | Večerní a ranní předvolba |
-| `/schedule/night/set` | Noční jas a režim |
-| `/schedule/action` | `{"action":"resume"}` — vrácení řízení automatice |
+| `/preset/set` | Default ON brightness and effect |
+| `/schedule/set` | Automation, location, time zone, times and offsets |
+| `/schedule/window/0/set`, `/schedule/window/1/set` | Schedule windows |
+| `/schedule/presets/set` | Evening and morning presets |
+| `/schedule/night/set` | Night brightness and effect |
+| `/schedule/action` | `{"action":"resume"}` — resume automation |
 | `/protection/set` | `{"enabled":true,"threshold_percent":80,"delay_ms":500,"latch_fault":false}` |
-| `/protection/polarity/set` | `{"output":"AOUT1"}` nebo `{"output":"AOUT2"}` — zapojení rezistoru; změna vyžaduje novou kalibraci |
-| `/protection/limits/set` | `{"first":5,"second":5,"all":5}` nebo `{"automatic":true}` |
+| `/protection/polarity/set` | `{"output":"AOUT1"}` or `{"output":"AOUT2"}` — resistor wiring; changing it requires recalibration |
+| `/protection/limits/set` | `{"first":5,"second":5,"all":5}` or `{"automatic":true}` |
 | `/protection/action` | `{"action":"calibrate"}`, `{"action":"cancel"}`, `{"action":"clear"}` |
-| `/network/set` | Síťová konfigurace |
+| `/network/set` | Network configuration |
 | `/alias/set` | `{"alias":"ledpasek02"}` |
 | `/system/action` | `{"action":"restart"}` |
-| `/get` | `{}` — vyžádání aktuálního stavu |
+| `/get` | `{}` — request current state |
 
-Příkazy posílejte bez retain. Odpovědi jsou v `/result`. Web používá stejnou validaci příkazů jako MQTT.
+Send commands without retain. Responses appear in `/result`. The web interface uses the same command validation as MQTT.
 
-## Build, instalace a ověření
+## Build, install and verify
 
-PlatformIO, Arduino ESP32 2.0.17 / ESP-IDF 4.4.7. Profily: `tdisplay` (LILYGO T-Display, 16 MB, bez displeje) a `esp32wroom32` (ESP32-WROOM-32 / DevKit, 4 MB). Shodný pinout; vyberte profil podle skutečné flash desky.
+PlatformIO, Arduino ESP32 2.0.17 / ESP-IDF 4.4.7. Profiles: `tdisplay` (LILYGO T-Display, 16 MB, display unused) and `esp32wroom32` (ESP32-WROOM-32 / DevKit, 4 MB). The pinout is identical; select the profile matching the board's actual flash capacity.
 
 ```powershell
 pio run -e tdisplay -e esp32wroom32
 ./tools/test.ps1
 python tests/device_api_guard.py
+python tests/language_assets.py
+npm --prefix tests/browser ci
+npm --prefix tests/browser exec -- playwright install chromium --only-shell
+npm --prefix tests/browser test
 python tools/package.py -e tdisplay
 ```
 
-První USB instalace používá `factory.bin` od adresy 0x0. Webové OTA používá pouze `firmware.bin`; dvě aplikační partition umožňují běžnou aktualizaci bez změny uložených nastavení. Nevytváří se záloha flash zařízení. Balíčky sestavené s místním `.local/bootstrap.h` mohou obsahovat přístupy a nesmějí se sdílet.
+Browser tests use a local mock device. They check both languages, drafts, file selection, literal user text, protocol payloads, calibration messages, persistence and mobile layout. They do not connect to a physical board.
 
-`tools/device_api.py` vyžaduje pro zápisy nastavit `LIGHT_HOST` a `LIGHT_DEVICE_ID` podle ověřené cílové desky. Nahrávací skript kontroluje identitu i velikost flash. Čtení stavu nevyžaduje identifikátor.
+The first USB installation uses `factory.bin` at address 0x0. Web OTA uses only `firmware.bin`; two application partitions permit normal updates without changing saved settings. No device flash backup is created. Builds made with a local `.local/bootstrap.h` may contain credentials and must not be shared.
 
-PWM generuje hardwarové LEDC na 1 kHz. Aktualizaci efektů vlastní samostatná úloha oddělená od HTTP, MQTT, ADC a zápisu nastavení. Diagnostika čítá skutečné hrany PWM. Nativní testy ověřují fyzikální model jednoho děliče, obě zapojení výstupů, rychlé i pomalé RC včetně doznívání při změnách jasu a prolínání, otevřený výstup, jednotlivé i společné zkraty, nízký jas, časování ochrany, tepelný výpočet, efekty a plánovač. Živé testy se spouštějí samostatně na výslovně vybrané desce.
+For writes, `tools/device_api.py` requires `LIGHT_HOST` and `LIGHT_DEVICE_ID` matching the verified target board. The upload helper checks identity and flash size. Reading state does not require an identifier.
 
-Živá kontrola `python tests/single_point_device.py --calibrate` provede kalibraci a změny jasu na předem ověřené desce; po skončení ponechá výstup vypnutý. Vyžaduje `LIGHT_HOST` a `LIGHT_DEVICE_ID`. Žádný fyzický zkrat nevytváří.
+Hardware LEDC generates PWM at 1 kHz. A dedicated task owns effect updates, separately from HTTP, MQTT, ADC and settings writes. Diagnostics count real PWM edges. Native tests cover the single-divider physical model, both output wirings, fast and slow RC responses including transients during brightness changes and crossfades, open output, individual and combined shorts, low brightness, protection timing, thermal calculations, effects and scheduling. Live tests are run separately on an explicitly selected board.
 
-Naměřené výsledky a omezení konkrétního osazení jsou v [VALIDATION.md](VALIDATION.md).
+The live check `python tests/single_point_device.py --calibrate` calibrates and changes brightness on a previously verified board, then leaves the output off. It requires `LIGHT_HOST` and `LIGHT_DEVICE_ID`. It creates no physical short circuit.
+
+See [VALIDATION.md](VALIDATION.md) for recorded measurements and hardware limitations.

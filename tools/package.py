@@ -16,8 +16,8 @@ config = configparser.ConfigParser()
 config.read(root/'platformio.ini', encoding='utf-8')
 profile = config[f'env:{args.environment}']
 flash_size = profile['board_upload.flash_size']
-label = ('LILYGO T-Display, ESP32-D0WDQ6, bez obsluhy displeje'
-         if args.environment == 'tdisplay' else 'ESP32-WROOM-32 / ESP32 DevKit, bez displeje')
+label = ('LILYGO T-Display, ESP32-D0WDQ6, display unused'
+         if args.environment == 'tdisplay' else 'ESP32-WROOM-32 / ESP32 DevKit, no display')
 build = root/'.pio/build'/args.environment
 version = re.search(r'Version\[\] = "([0-9.]+)"', (root/'src/main.cpp').read_text(encoding='utf-8')).group(1)
 out = root/'releases'/version/args.environment
@@ -48,18 +48,18 @@ for offset, source in images.items():
 (out/'factory.bin').write_bytes(merged)
 manifest['files']['factory.bin'] = dict(offset='0x0',bytes=len(merged),sha256=hashlib.sha256(merged).hexdigest())
 (out/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n',encoding='utf-8')
-(out/'CTI-ME.txt').write_text(f'{label}, {flash_size} flash; DRV8833. Firmware {version}.\n'
-    'GPIO25 = AIN1, GPIO26 = AIN2, GPIO27 = nSLEEP, společná zem GND.\n'
-    'GPIO32 = bod A za 5,6 ohmu přes 3k/3k dělič a kondenzátor na GND. GPIO37 se neřídí, může být fyzicky spojen s GND.\n'
-    'Ve webu vyber AOUT1 nebo AOUT2 podle výstupu, ze kterého vede rezistor. Změna vyžaduje novou kalibraci.\n'
-    'Ochranu nastav ve webu Světlo > Ochrana proti zkratu. První start čeká na kalibraci.\n'
-    'Výchozí reakce na závadu: jen vypnout. Volitelné trvalé blokování se nastavuje na webu.\n'
-    'První USB instalace: factory.bin od adresy 0x0, pouze na určenou novou desku.\n'
-    'Další aktualizace přes web: firmware.bin.\n'
-    'Web i OTA jsou bez přihlášení a hesla.\n'
-    'Výchozí alias ledpasek02 lze změnit ve webu: Systém > Název zařízení. Web: http://ledpasek02.local/.\n'
-    'MQTT základ wifi2mqtt/ledpasek02; po změně aliasu wifi2mqtt/<alias>.\n'
-    'Otevřené AP má jméno aliasu: po 30 s bez domácí Wi-Fi, http://192.168.4.1/. Po připojení se ihned vypne.\n'
-    'Obsahuje místní Wi-Fi/MQTT přístupy, nesdílet.\n'
-    'Napětí řetězu a omezení proudu musí být ověřeny před připojením. Viz README.md.\n',encoding='utf-8')
+(out/'README.txt').write_text(f'{label}, {flash_size} flash; DRV8833. Firmware {version}.\n'
+    'GPIO25 = AIN1, GPIO26 = AIN2, GPIO27 = nSLEEP; common GND.\n'
+    'GPIO32 = point A after 5.6 ohms, through a 3k/3k divider and capacitor to GND. GPIO37 is not driven; it may be physically connected to GND.\n'
+    'Select AOUT1 or AOUT2 in the web interface to match the resistor connection. Changing it requires recalibration.\n'
+    'Configure protection under Light > Short-circuit protection. The first start waits for calibration.\n'
+    'Default fault response: turn off only. Optional persistent latching is configured in the web interface.\n'
+    'First USB installation: factory.bin at address 0x0, only on the intended new board.\n'
+    'Subsequent web updates: firmware.bin.\n'
+    'Web and OTA require no login or password. Choose EN or CZ in the web header.\n'
+    'Change the default alias ledpasek02 under System > Device name. Web: http://ledpasek02.local/.\n'
+    'MQTT base: wifi2mqtt/ledpasek02; after an alias change: wifi2mqtt/<alias>.\n'
+    'The open AP uses the alias: it starts after 30 s without home Wi-Fi, at http://192.168.4.1/, and stops when the connection recovers.\n'
+    + ('Contains local Wi-Fi/MQTT credentials. Do not share.\n' if manifest['contains_private_credentials'] else 'Built without .local/bootstrap.h. Review configuration before sharing.\n')
+    + 'Verify string voltage and current limiting before connection. See the repository README.md.\n',encoding='utf-8')
 print(f'Packaged {version}/{args.environment}: {len(merged)} bytes, {flash_size}, two OTA slots verified.')
